@@ -154,9 +154,6 @@ if [ "$PROTOCOL" = "vless" ] && [ "$SECURITY" != "none" ]; then
     CLIENT_FLOW=",\"flow\":\"xtls-rprx-vision\""
 fi
 
-# Важно: для VLESS и VMess добавляем "decryption":"none"
-DECRYPTION_LINE="\"decryption\": \"none\""
-
 # Сборка конфига
 cat > "$CONFIG_FILE" << EOF
 {
@@ -185,7 +182,7 @@ cat > "$CONFIG_FILE" << EOF
             "id": "$UUID"$CLIENT_FLOW
           }
         ],
-        $DECRYPTION_LINE
+        "decryption": "none"
       },
       "streamSettings": {
         "network": "$TRANSPORT"$TRANSPORT_BLOCK,
@@ -218,7 +215,7 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# 7. Вспомогательные скрипты
+# 7. Создание скриптов управления (исправленные)
 echo -e "${GREEN}[6/6] Создание скриптов управления...${NC}"
 
 # mainuser
@@ -228,15 +225,17 @@ protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
 uuid=$(grep 'uuid' /usr/local/etc/xray/.keys | awk '{print $2}')
 security=$(jq -r '.inbounds[0].streamSettings.security' /usr/local/etc/xray/config.json)
+transport=$(jq -r '.inbounds[0].streamSettings.network' /usr/local/etc/xray/config.json)
+[ -z "$transport" ] || [ "$transport" = "null" ] && transport="tcp"
 if [ "$security" = "reality" ]; then
     pbk=$(grep 'PublicKey' /usr/local/etc/xray/.keys | awk '{print $2}')
     sid=$(grep 'shortsid' /usr/local/etc/xray/.keys | awk '{print $2}')
     sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=tcp&flow=xtls-rprx-vision&encryption=none#main"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=${transport}&flow=xtls-rprx-vision&encryption=none#main"
 elif [ "$security" = "tls" ]; then
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=tcp&encryption=none#main"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=${transport}&encryption=none#main"
 else
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none#main"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none&type=${transport}#main"
 fi
 echo "Ссылка для подключения:"
 echo "$link"
@@ -246,7 +245,7 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/mainuser
 
-# newuser (добавляет decryption:none для новых клиентов)
+# newuser (с учётом decryption:none)
 cat > /usr/local/bin/newuser << 'EOF'
 #!/bin/bash
 read -p "Введите имя пользователя: " email
@@ -265,19 +264,13 @@ if [ "$security" != "none" ]; then
 else
     flow=""
 fi
-protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
-if [ "$protocol" = "vless" ] || [ "$protocol" = "vmess" ]; then
-    decryption_line="\"decryption\": \"none\""
-else
-    decryption_line=""
-fi
-jq --arg email "$email" --arg uuid "$uuid" --arg flow "$flow" --arg dec "$decryption_line" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid} + ($flow | fromjson? // {})] | .inbounds[0].settings.decryption = ($dec | fromjson? // null)' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
+jq --arg email "$email" --arg uuid "$uuid" --arg flow "$flow" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid} + ($flow | fromjson? // {})]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
 systemctl restart xray
 echo "Пользователь $email создан."
 EOF
 chmod +x /usr/local/bin/newuser
 
-# rmuser (без изменений)
+# rmuser
 cat > /usr/local/bin/rmuser << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -301,7 +294,7 @@ echo "Клиент $selected_email удалён."
 EOF
 chmod +x /usr/local/bin/rmuser
 
-# sharelink (адаптирован)
+# sharelink (исправлен)
 cat > /usr/local/bin/sharelink << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -323,15 +316,17 @@ uuid=$(jq -r --arg email "$selected_email" '.inbounds[0].settings.clients[] | se
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
 security=$(jq -r '.inbounds[0].streamSettings.security' /usr/local/etc/xray/config.json)
+transport=$(jq -r '.inbounds[0].streamSettings.network' /usr/local/etc/xray/config.json)
+[ -z "$transport" ] || [ "$transport" = "null" ] && transport="tcp"
 if [ "$security" = "reality" ]; then
     pbk=$(grep 'PublicKey' /usr/local/etc/xray/.keys | awk '{print $2}')
     sid=$(grep 'shortsid' /usr/local/etc/xray/.keys | awk '{print $2}')
     sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=tcp&flow=xtls-rprx-vision&encryption=none#${selected_email}"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=${transport}&flow=xtls-rprx-vision&encryption=none#${selected_email}"
 elif [ "$security" = "tls" ]; then
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=tcp&encryption=none#${selected_email}"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=${transport}&encryption=none#${selected_email}"
 else
-    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none#${selected_email}"
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none&type=${transport}#${selected_email}"
 fi
 echo "Ссылка для $selected_email:"
 echo "$link"
@@ -341,7 +336,7 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/sharelink
 
-# userlist (без изменений)
+# userlist
 cat > /usr/local/bin/userlist << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
