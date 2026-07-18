@@ -4,7 +4,7 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    Установка Xray-core с настройками    ${NC}"
@@ -47,17 +47,24 @@ fi
 echo -e "${YELLOW}Выберите безопасность:${NC}"
 echo "1) Reality (рекомендуется)"
 echo "2) TLS (требуется сертификат)"
+echo "3) None (без шифрования, не рекомендуется)"
 read -p "Введите номер (по умолчанию 1): " SECURITY_CHOICE
 SECURITY_CHOICE=${SECURITY_CHOICE:-1}
 
-if [ "$SECURITY_CHOICE" -eq 2 ]; then
+case $SECURITY_CHOICE in
+  2)
     SECURITY="tls"
     read -p "Введите домен для сертификата (например, example.com): " DOMAIN
-else
+    ;;
+  3)
+    SECURITY="none"
+    ;;
+  *)
     SECURITY="reality"
     read -p "Введите домен для маскировки (по умолчанию github.com): " SNI_DOMAIN
     SNI_DOMAIN=${SNI_DOMAIN:-github.com}
-fi
+    ;;
+esac
 
 # 2. Обновление системы и установка зависимостей
 echo -e "${GREEN}[1/6] Обновление системы и установка зависимостей...${NC}"
@@ -79,7 +86,7 @@ fi
 echo -e "${GREEN}[3/6] Установка Xray-core...${NC}"
 bash -c "$(curl -4 -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# 5. Генерация ключей
+# 5. Генерация ключей (только для REALITY)
 echo -e "${GREEN}[4/6] Генерация ключей...${NC}"
 KEYS_FILE="/usr/local/etc/xray/.keys"
 [ -f "$KEYS_FILE" ] && rm "$KEYS_FILE"
@@ -98,6 +105,54 @@ fi
 # 6. Создание конфигурации
 echo -e "${GREEN}[5/6] Создание конфигурации Xray...${NC}"
 CONFIG_FILE="/usr/local/etc/xray/config.json"
+
+# Формируем блок безопасности
+SECURITY_BLOCK=""
+if [ "$SECURITY" = "reality" ]; then
+    SECURITY_BLOCK=$(cat <<EOF
+,
+        "realitySettings": {
+          "show": false,
+          "dest": "$SNI_DOMAIN:443",
+          "xver": 0,
+          "serverNames": [
+            "$SNI_DOMAIN",
+            "www.$SNI_DOMAIN"
+          ],
+          "privateKey": "$PRIVATE_KEY",
+          "minClientVer": "",
+          "maxClientVer": "",
+          "maxTimeDiff": 0,
+          "shortIds": [
+            "$(grep 'shortsid' "$KEYS_FILE" | awk '{print $2}')"
+          ]
+        }
+EOF
+)
+elif [ "$SECURITY" = "tls" ]; then
+    SECURITY_BLOCK=$(cat <<EOF
+,
+        "tlsSettings": {
+          "serverName": "$DOMAIN",
+          "allowInsecure": false
+        }
+EOF
+)
+fi
+
+# Формируем блок транспорта
+TRANSPORT_BLOCK=""
+if [ "$TRANSPORT" = "ws" ] || [ "$TRANSPORT" = "xhttp" ]; then
+    TRANSPORT_BLOCK=",\"wsSettings\":{\"path\":\"$PATH_STR\"}"
+elif [ "$TRANSPORT" = "grpc" ]; then
+    TRANSPORT_BLOCK=",\"grpcSettings\":{\"serviceName\":\"\"}"
+fi
+
+# Формируем блок клиента (flow только если security не none и протокол vless)
+CLIENT_FLOW=""
+if [ "$PROTOCOL" = "vless" ] && [ "$SECURITY" != "none" ]; then
+    CLIENT_FLOW=",\"flow\":\"xtls-rprx-vision\""
+fi
 
 cat > "$CONFIG_FILE" << EOF
 {
@@ -123,33 +178,13 @@ cat > "$CONFIG_FILE" << EOF
         "clients": [
           {
             "email": "main",
-            "id": "$UUID"$([ "$PROTOCOL" = "vless" ] && echo ',"flow":"xtls-rprx-vision"')
+            "id": "$UUID"$CLIENT_FLOW
           }
         ]$([ "$PROTOCOL" = "vmess" ] && echo ',"decryption":"none"')
       },
       "streamSettings": {
-        "network": "$TRANSPORT"$([ "$TRANSPORT" = "ws" ] || [ "$TRANSPORT" = "xhttp" ] && echo ",\"wsSettings\":{\"path\":\"$PATH_STR\"}" || [ "$TRANSPORT" = "grpc" ] && echo ",\"grpcSettings\":{\"serviceName\":\"\"}"),
-        "security": "$SECURITY"$([ "$SECURITY" = "reality" ] && echo ",
-        \"realitySettings\": {
-          \"show\": false,
-          \"dest\": \"$SNI_DOMAIN:443\",
-          \"xver\": 0,
-          \"serverNames\": [
-            \"$SNI_DOMAIN\",
-            \"www.$SNI_DOMAIN\"
-          ],
-          \"privateKey\": \"$PRIVATE_KEY\",
-          \"minClientVer\": \"\",
-          \"maxClientVer\": \"\",
-          \"maxTimeDiff\": 0,
-          \"shortIds\": [
-            \"$(grep 'shortsid' "$KEYS_FILE" | awk '{print $2}')\"
-          ]
-        }" || [ "$SECURITY" = "tls" ] && echo ",
-        \"tlsSettings\": {
-          \"serverName\": \"$DOMAIN\",
-          \"allowInsecure\": false
-        }")
+        "network": "$TRANSPORT"$TRANSPORT_BLOCK,
+        "security": "$SECURITY"$SECURITY_BLOCK
       },
       "sniffing": {
         "enabled": true,
@@ -193,8 +228,10 @@ if [ "$security" = "reality" ]; then
     sid=$(grep 'shortsid' /usr/local/etc/xray/.keys | awk '{print $2}')
     sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
     link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=tcp&flow=xtls-rprx-vision&encryption=none#main"
-else
+elif [ "$security" = "tls" ]; then
     link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=tcp&encryption=none#main"
+else
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none#main"
 fi
 echo "Ссылка для подключения:"
 echo "$link"
@@ -217,13 +254,19 @@ if jq -e --arg email "$email" '.inbounds[0].settings.clients[] | select(.email =
     exit 1
 fi
 uuid=$(xray uuid)
-jq --arg email "$email" --arg uuid "$uuid" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid, "flow": "xtls-rprx-vision"}]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
+security=$(jq -r '.inbounds[0].streamSettings.security' /usr/local/etc/xray/config.json)
+if [ "$security" != "none" ]; then
+    flow=",\"flow\":\"xtls-rprx-vision\""
+else
+    flow=""
+fi
+jq --arg email "$email" --arg uuid "$uuid" --arg flow "$flow" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid} + ($flow | fromjson? // {})]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
 systemctl restart xray
 echo "Пользователь $email создан."
 EOF
 chmod +x /usr/local/bin/newuser
 
-# rmuser
+# rmuser (без изменений)
 cat > /usr/local/bin/rmuser << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -247,7 +290,7 @@ echo "Клиент $selected_email удалён."
 EOF
 chmod +x /usr/local/bin/rmuser
 
-# sharelink
+# sharelink (с поддержкой none)
 cat > /usr/local/bin/sharelink << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -274,8 +317,10 @@ if [ "$security" = "reality" ]; then
     sid=$(grep 'shortsid' /usr/local/etc/xray/.keys | awk '{print $2}')
     sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
     link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=reality&sni=${sni}&fp=firefox&pbk=${pbk}&sid=${sid}&type=tcp&flow=xtls-rprx-vision&encryption=none#${selected_email}"
-else
+elif [ "$security" = "tls" ]; then
     link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?security=tls&sni=$(jq -r '.inbounds[0].streamSettings.tlsSettings.serverName' /usr/local/etc/xray/config.json)&fp=firefox&type=tcp&encryption=none#${selected_email}"
+else
+    link="${protocol}://${uuid}@$(curl -4 -s icanhazip.com):${port}?encryption=none#${selected_email}"
 fi
 echo "Ссылка для $selected_email:"
 echo "$link"
@@ -285,7 +330,7 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/sharelink
 
-# userlist
+# userlist (без изменений)
 cat > /usr/local/bin/userlist << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
