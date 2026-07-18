@@ -10,7 +10,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}    Установка Xray-core с настройками    ${NC}"
 echo -e "${GREEN}========================================${NC}"
 
-# 1. Запрос параметров у пользователя
+# 1. Запрос параметров
 read -p "Введите порт (по умолчанию 443): " PORT
 PORT=${PORT:-443}
 
@@ -66,12 +66,12 @@ case $SECURITY_CHOICE in
     ;;
 esac
 
-# 2. Обновление системы и установка зависимостей
+# 2. Обновление и зависимости
 echo -e "${GREEN}[1/6] Обновление системы и установка зависимостей...${NC}"
 apt update -y
 apt install -y curl wget qrencode jq openssl
 
-# 3. Включение BBR
+# 3. BBR
 echo -e "${GREEN}[2/6] Настройка BBR...${NC}"
 if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
     echo -e "${GREEN}BBR уже включен.${NC}"
@@ -86,7 +86,7 @@ fi
 echo -e "${GREEN}[3/6] Установка Xray-core...${NC}"
 bash -c "$(curl -4 -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# 5. Генерация ключей (только для REALITY)
+# 5. Генерация ключей
 echo -e "${GREEN}[4/6] Генерация ключей...${NC}"
 KEYS_FILE="/usr/local/etc/xray/.keys"
 [ -f "$KEYS_FILE" ] && rm "$KEYS_FILE"
@@ -102,11 +102,11 @@ if [ "$SECURITY" = "reality" ]; then
     PUBLIC_KEY=$(grep 'PublicKey' "$KEYS_FILE" | awk '{print $2}')
 fi
 
-# 6. Создание конфигурации
+# 6. Формирование конфига
 echo -e "${GREEN}[5/6] Создание конфигурации Xray...${NC}"
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 
-# Формируем блок безопасности
+# Блок безопасности
 SECURITY_BLOCK=""
 if [ "$SECURITY" = "reality" ]; then
     SECURITY_BLOCK=$(cat <<EOF
@@ -140,7 +140,7 @@ EOF
 )
 fi
 
-# Формируем блок транспорта
+# Блок транспорта
 TRANSPORT_BLOCK=""
 if [ "$TRANSPORT" = "ws" ] || [ "$TRANSPORT" = "xhttp" ]; then
     TRANSPORT_BLOCK=",\"wsSettings\":{\"path\":\"$PATH_STR\"}"
@@ -148,12 +148,16 @@ elif [ "$TRANSPORT" = "grpc" ]; then
     TRANSPORT_BLOCK=",\"grpcSettings\":{\"serviceName\":\"\"}"
 fi
 
-# Формируем блок клиента (flow только если security не none и протокол vless)
+# Flow для VLESS (если безопасность не none)
 CLIENT_FLOW=""
 if [ "$PROTOCOL" = "vless" ] && [ "$SECURITY" != "none" ]; then
     CLIENT_FLOW=",\"flow\":\"xtls-rprx-vision\""
 fi
 
+# Важно: для VLESS и VMess добавляем "decryption":"none"
+DECRYPTION_LINE="\"decryption\": \"none\""
+
+# Сборка конфига
 cat > "$CONFIG_FILE" << EOF
 {
   "log": {
@@ -180,7 +184,8 @@ cat > "$CONFIG_FILE" << EOF
             "email": "main",
             "id": "$UUID"$CLIENT_FLOW
           }
-        ]$([ "$PROTOCOL" = "vmess" ] && echo ',"decryption":"none"')
+        ],
+        $DECRYPTION_LINE
       },
       "streamSettings": {
         "network": "$TRANSPORT"$TRANSPORT_BLOCK,
@@ -213,7 +218,7 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# 7. Создание вспомогательных скриптов
+# 7. Вспомогательные скрипты
 echo -e "${GREEN}[6/6] Создание скриптов управления...${NC}"
 
 # mainuser
@@ -241,7 +246,7 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/mainuser
 
-# newuser
+# newuser (добавляет decryption:none для новых клиентов)
 cat > /usr/local/bin/newuser << 'EOF'
 #!/bin/bash
 read -p "Введите имя пользователя: " email
@@ -260,7 +265,13 @@ if [ "$security" != "none" ]; then
 else
     flow=""
 fi
-jq --arg email "$email" --arg uuid "$uuid" --arg flow "$flow" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid} + ($flow | fromjson? // {})]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
+protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
+if [ "$protocol" = "vless" ] || [ "$protocol" = "vmess" ]; then
+    decryption_line="\"decryption\": \"none\""
+else
+    decryption_line=""
+fi
+jq --arg email "$email" --arg uuid "$uuid" --arg flow "$flow" --arg dec "$decryption_line" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid} + ($flow | fromjson? // {})] | .inbounds[0].settings.decryption = ($dec | fromjson? // null)' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
 systemctl restart xray
 echo "Пользователь $email создан."
 EOF
@@ -290,7 +301,7 @@ echo "Клиент $selected_email удалён."
 EOF
 chmod +x /usr/local/bin/rmuser
 
-# sharelink (с поддержкой none)
+# sharelink (адаптирован)
 cat > /usr/local/bin/sharelink << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
