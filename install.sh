@@ -102,8 +102,8 @@ EOF
     fi
 
     # Шаг 4: Создание systemd-службы
-    echo -e "${GREEN}[4/5] Создание systemd-службы...${NC}"
-    cat > /etc/systemd/system/hysteria-server.service << EOF
+echo -e "${GREEN}[4/5] Создание systemd-службы...${NC}"
+cat > /etc/systemd/system/hysteria-server.service << EOF
 [Unit]
 Description=Hysteria2 Server
 After=network.target
@@ -118,26 +118,26 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    # Шаг 5: Запуск службы
-    echo -e "${GREEN}[5/5] Запуск Hysteria2...${NC}"
-    systemctl daemon-reload
-    systemctl restart hysteria-server
-    systemctl enable hysteria-server
+# Шаг 5: Запуск службы
+echo -e "${GREEN}[5/5] Запуск Hysteria2...${NC}"
+systemctl daemon-reload
+systemctl restart hysteria-server
+systemctl enable hysteria-server
 
-    # Проверка статуса
-    if systemctl is-active --quiet hysteria-server; then
-        echo -e "${GREEN}Служба Hysteria2 успешно запущена.${NC}"
-    else
-        echo -e "${RED}Ошибка: служба Hysteria2 не запустилась. Проверьте логи: journalctl -u hysteria-server -f${NC}"
-        exit 1
-    fi
+# Проверка статуса
+if systemctl is-active --quiet hysteria-server; then
+    echo -e "${GREEN}Служба Hysteria2 успешно запущена.${NC}"
+else
+    echo -e "${RED}Ошибка: служба Hysteria2 не запустилась. Проверьте логи: journalctl -u hysteria-server -f${NC}"
+    exit 1
+fi
 
-    # Генерация ссылки и скрипта управления
-    cat > /usr/local/bin/h2-show << 'EOF'
+# Генерация ссылки (исправляем дублирование порта)
+cat > /usr/local/bin/h2-show << 'EOF'
 #!/bin/bash
 IP=$(curl -4 -s icanhazip.com)
 PASSWORD=$(grep 'password:' /etc/hysteria/config.yaml | awk '{print $2}')
-PORT=$(grep 'listen:' /etc/hysteria/config.yaml | awk '{print $2}')
+PORT=$(grep 'listen:' /etc/hysteria/config.yaml | awk '{print $2}' | sed 's/://g')
 UP=$(grep -A1 'bandwidth:' /etc/hysteria/config.yaml | grep 'up:' | awk '{print $2}')
 DOWN=$(grep -A1 'bandwidth:' /etc/hysteria/config.yaml | grep 'down:' | awk '{print $2}')
 if [ -n "$UP" ] && [ -n "$DOWN" ]; then
@@ -146,7 +146,7 @@ else
     echo "hysteria2://$PASSWORD@$IP:$PORT?insecure=1&sni=www.google.com#Hysteria2"
 fi
 EOF
-    chmod +x /usr/local/bin/h2-show
+chmod +x /usr/local/bin/h2-show
 
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}✅ Установка Hysteria2 завершена!${NC}"
