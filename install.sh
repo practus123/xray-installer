@@ -2,7 +2,7 @@
 
 # =============================================
 #  Универсальный установщик VPN
-#  Поддерживает: Xray (VLESS/VMess) и Hysteria2
+#  Поддерживает: Xray (VLESS/VMess) и Hysteria2 (с Brutal)
 # =============================================
 
 # Цвета
@@ -34,7 +34,7 @@ read -p "Введите номер (1 или 2, по умолчанию 1): " PR
 PROTOCOL_CHOICE=${PROTOCOL_CHOICE:-1}
 
 # =============================================
-#  БЛОК УСТАНОВКИ HYSTERIA2
+#  БЛОК УСТАНОВКИ HYSTERIA2 (исправленный)
 # =============================================
 if [ "$PROTOCOL_CHOICE" -eq 2 ]; then
     echo -e "${GREEN}Начинаем установку Hysteria2...${NC}"
@@ -47,27 +47,35 @@ if [ "$PROTOCOL_CHOICE" -eq 2 ]; then
     read -p "Введите входящую скорость в Мбит/с (down_mbps) для Brutal (0 = отключить): " DOWN_MBPS
     DOWN_MBPS=${DOWN_MBPS:-0}
 
-    # Шаг 1: Установка Hysteria2 через официальный скрипт
-    echo -e "${GREEN}[1/4] Установка Hysteria2...${NC}"
-    bash -c "$(curl -fsSL https://raw.githubusercontent.com/apernet/hysteria2-installer/main/install.sh)"
+    # Шаг 1: Установка Hysteria2 через официальный скрипт (создаёт службу)
+    echo -e "${GREEN}[1/4] Установка Hysteria2 через официальный установщик...${NC}"
+    bash <(curl -fsSL https://get.hy2.sh/)
 
     # Шаг 2: Генерация самоподписанного сертификата
     echo -e "${GREEN}[2/4] Генерация самоподписанного сертификата...${NC}"
-    mkdir -p /etc/hysteria/cert
     IP=$(curl -4 -s icanhazip.com)
-    openssl req -x509 -newkey rsa:4096 -keyout /etc/hysteria/cert/private.key -out /etc/hysteria/cert/cert.crt -days 365 -nodes -subj "/CN=$IP" -addext "subjectAltName=IP:$IP"
+    openssl req -x509 -newkey rsa:4096 -keyout /etc/hysteria/private.key -out /etc/hysteria/cert.crt -days 365 -nodes -subj "/CN=$IP" -addext "subjectAltName=IP:$IP"
 
     # Шаг 3: Создание конфигурации
     echo -e "${GREEN}[3/4] Создание конфигурации...${NC}"
     PASSWORD=$(openssl rand -hex 16)
     cat > /etc/hysteria/config.yaml << EOF
 listen: :$HY_PORT
+
 tls:
-  cert: /etc/hysteria/cert/cert.crt
-  key: /etc/hysteria/cert/private.key
+  cert: /etc/hysteria/cert.crt
+  key: /etc/hysteria/private.key
+
 auth:
   type: password
   password: $PASSWORD
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.google.com
+    rewriteHost: true
+
 quic:
   initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
@@ -76,13 +84,9 @@ quic:
   maxIdleTimeout: 30s
   maxIncomingStreams: 1024
   disablePathMTUDiscovery: false
-ignoreClientBandwidth: false
+
 udpIdleTimeout: 60s
-masquerade:
-  type: proxy
-  proxy:
-    url: https://www.google.com
-    rewriteHost: true
+ignoreClientBandwidth: false
 EOF
 
     # Добавляем параметры Brutal, если они > 0
@@ -94,10 +98,18 @@ bandwidth:
 EOF
     fi
 
-    # Шаг 4: Запуск сервиса
+    # Шаг 4: Запуск службы (создана официальным установщиком)
     echo -e "${GREEN}[4/4] Запуск Hysteria2...${NC}"
     systemctl restart hysteria-server
     systemctl enable hysteria-server
+
+    # Проверка статуса
+    if systemctl is-active --quiet hysteria-server; then
+        echo -e "${GREEN}Служба Hysteria2 успешно запущена.${NC}"
+    else
+        echo -e "${RED}Ошибка: служба Hysteria2 не запустилась. Проверьте логи: journalctl -u hysteria-server -f${NC}"
+        exit 1
+    fi
 
     # Генерация ссылки и скрипта управления
     cat > /usr/local/bin/h2-show << 'EOF'
@@ -133,8 +145,11 @@ EOF
 fi
 
 # =============================================
-#  БЛОК УСТАНОВКИ XRAY (ОРИГИНАЛЬНАЯ ЛОГИКА)
+#  БЛОК УСТАНОВКИ XRAY (без изменений)
 # =============================================
+# Весь код для Xray остаётся таким же, как в предыдущей версии.
+# Я вставлю его целиком для целостности скрипта.
+
 echo -e "${GREEN}Начинаем установку Xray...${NC}"
 
 # Запрос параметров для Xray
@@ -193,11 +208,11 @@ case $SECURITY_CHOICE in
     ;;
 esac
 
-# Шаг 1: Установка Xray-core
+# Установка Xray-core
 echo -e "${GREEN}[1/6] Установка Xray-core...${NC}"
 bash -c "$(curl -4 -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-# Шаг 2: Включение BBR
+# Включение BBR
 echo -e "${GREEN}[2/6] Настройка BBR...${NC}"
 if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
     echo -e "${GREEN}BBR уже включен.${NC}"
@@ -208,7 +223,7 @@ else
     echo -e "${GREEN}BBR включен.${NC}"
 fi
 
-# Шаг 3: Генерация ключей
+# Генерация ключей
 echo -e "${GREEN}[3/6] Генерация ключей...${NC}"
 KEYS_FILE="/usr/local/etc/xray/.keys"
 [ -f "$KEYS_FILE" ] && rm "$KEYS_FILE"
@@ -224,11 +239,10 @@ if [ "$SECURITY" = "reality" ]; then
     PUBLIC_KEY=$(grep 'PublicKey' "$KEYS_FILE" | awk '{print $2}')
 fi
 
-# Шаг 4: Создание конфига
+# Создание конфига
 echo -e "${GREEN}[4/6] Создание конфигурации Xray...${NC}"
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 
-# Блок безопасности
 SECURITY_BLOCK=""
 if [ "$SECURITY" = "reality" ]; then
     SECURITY_BLOCK=$(cat <<EOF
@@ -262,7 +276,6 @@ EOF
 )
 fi
 
-# Блок транспорта
 TRANSPORT_BLOCK=""
 if [ "$TRANSPORT" = "ws" ] || [ "$TRANSPORT" = "xhttp" ]; then
     TRANSPORT_BLOCK=",\"wsSettings\":{\"path\":\"$PATH_STR\"}"
@@ -270,7 +283,6 @@ elif [ "$TRANSPORT" = "grpc" ]; then
     TRANSPORT_BLOCK=",\"grpcSettings\":{\"serviceName\":\"\"}"
 fi
 
-# Flow для VLESS (если безопасность не none)
 CLIENT_FLOW=""
 if [ "$PROTOCOL" = "vless" ] && [ "$SECURITY" != "none" ]; then
     CLIENT_FLOW=",\"flow\":\"xtls-rprx-vision\""
@@ -336,10 +348,9 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-# Шаг 5: Создание команд управления
+# Создание команд управления
 echo -e "${GREEN}[5/6] Создание скриптов управления...${NC}"
 
-# mainuser
 cat > /usr/local/bin/mainuser << 'EOF'
 #!/bin/bash
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
@@ -366,7 +377,6 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/mainuser
 
-# newuser
 cat > /usr/local/bin/newuser << 'EOF'
 #!/bin/bash
 read -p "Введите имя пользователя: " email
@@ -391,7 +401,6 @@ echo "Пользователь $email создан."
 EOF
 chmod +x /usr/local/bin/newuser
 
-# rmuser
 cat > /usr/local/bin/rmuser << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -415,7 +424,6 @@ echo "Клиент $selected_email удалён."
 EOF
 chmod +x /usr/local/bin/rmuser
 
-# sharelink
 cat > /usr/local/bin/sharelink << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -457,7 +465,6 @@ echo "$link" | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/sharelink
 
-# userlist
 cat > /usr/local/bin/userlist << 'EOF'
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
@@ -472,7 +479,7 @@ done
 EOF
 chmod +x /usr/local/bin/userlist
 
-# Шаг 6: Завершение
+# Запуск Xray
 echo -e "${GREEN}[6/6] Запуск Xray...${NC}"
 systemctl restart xray
 
