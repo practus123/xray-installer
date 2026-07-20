@@ -47,17 +47,20 @@ if [ "$PROTOCOL_CHOICE" -eq 2 ]; then
     read -p "Введите входящую скорость в Мбит/с (down_mbps) для Brutal (0 = отключить): " DOWN_MBPS
     DOWN_MBPS=${DOWN_MBPS:-0}
 
-    # Шаг 1: Установка Hysteria2 через официальный скрипт (создаёт службу)
-    echo -e "${GREEN}[1/4] Установка Hysteria2 через официальный установщик...${NC}"
-    bash <(curl -fsSL https://get.hy2.sh/)
+    # Шаг 1: Скачивание бинарного файла Hysteria2
+    echo -e "${GREEN}[1/5] Загрузка последней версии Hysteria2...${NC}"
+    HY_VERSION=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | grep tag_name | cut -d '"' -f 4)
+    wget -qO /usr/local/bin/hysteria "https://github.com/apernet/hysteria/releases/download/${HY_VERSION}/hysteria-linux-amd64"
+    chmod +x /usr/local/bin/hysteria
 
     # Шаг 2: Генерация самоподписанного сертификата
-    echo -e "${GREEN}[2/4] Генерация самоподписанного сертификата...${NC}"
+    echo -e "${GREEN}[2/5] Генерация самоподписанного сертификата...${NC}"
+    mkdir -p /etc/hysteria
     IP=$(curl -4 -s icanhazip.com)
     openssl req -x509 -newkey rsa:4096 -keyout /etc/hysteria/private.key -out /etc/hysteria/cert.crt -days 365 -nodes -subj "/CN=$IP" -addext "subjectAltName=IP:$IP"
 
     # Шаг 3: Создание конфигурации
-    echo -e "${GREEN}[3/4] Создание конфигурации...${NC}"
+    echo -e "${GREEN}[3/5] Создание конфигурации...${NC}"
     PASSWORD=$(openssl rand -hex 16)
     cat > /etc/hysteria/config.yaml << EOF
 listen: :$HY_PORT
@@ -98,8 +101,26 @@ bandwidth:
 EOF
     fi
 
-    # Шаг 4: Запуск службы (создана официальным установщиком)
-    echo -e "${GREEN}[4/4] Запуск Hysteria2...${NC}"
+    # Шаг 4: Создание systemd-службы
+    echo -e "${GREEN}[4/5] Создание systemd-службы...${NC}"
+    cat > /etc/systemd/system/hysteria-server.service << EOF
+[Unit]
+Description=Hysteria2 Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Шаг 5: Запуск службы
+    echo -e "${GREEN}[5/5] Запуск Hysteria2...${NC}"
+    systemctl daemon-reload
     systemctl restart hysteria-server
     systemctl enable hysteria-server
 
@@ -145,11 +166,8 @@ EOF
 fi
 
 # =============================================
-#  БЛОК УСТАНОВКИ XRAY (без изменений)
+#  БЛОК УСТАНОВКИ XRAY (без изменений, рабочий)
 # =============================================
-# Весь код для Xray остаётся таким же, как в предыдущей версии.
-# Я вставлю его целиком для целостности скрипта.
-
 echo -e "${GREEN}Начинаем установку Xray...${NC}"
 
 # Запрос параметров для Xray
